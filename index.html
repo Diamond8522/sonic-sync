@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sonic.sync</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
+    <style>
+        body { padding: 20px; text-align: center; }
+        .status { font-weight: bold; color: #00d9ff; }
+        #log { border: 1px solid #333; padding: 10px; height: 100px; overflow-y: scroll; text-align: left; background: #000; color: #0f0; font-family: monospace; }
+        canvas { width: 100%; height: 100px; background: #111; border-radius: 8px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <main class="container">
+        <h1>Sonic.sync 📡</h1>
+        <p>Data over Audio. <br><small>Turn volume UP.</small></p>
+        
+        <button id="startBtn">1. Start System</button>
+        
+        <hr>
+
+        <h3>Transmitter</h3>
+        <input type="text" id="msgInput" placeholder="Type hello..." disabled>
+        <button id="sendBtn" disabled>Send via Sound</button>
+
+        <hr>
+
+        <h3>Receiver</h3>
+        <div id="status" class="status">Microphone Off</div>
+        <canvas id="visualizer"></canvas>
+        <div id="log">Waiting for signals...</div>
+
+    </main>
+
+    <script>
+        // --- CONFIG ---
+        const FREQ_ZERO = 18500; // 18.5 kHz (High pitch)
+        const FREQ_ONE = 19500;  // 19.5 kHz (Higher pitch)
+        const BIT_DURATION = 0.1; // Seconds per bit (slow for reliability)
+        
+        let audioCtx;
+        let oscillator;
+        let analyser;
+        let isListening = false;
+
+        // --- INIT ---
+        const startBtn = document.getElementById('startBtn');
+        const msgInput = document.getElementById('msgInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const statusDiv = document.getElementById('status');
+        const logDiv = document.getElementById('log');
+        const canvas = document.getElementById('visualizer');
+        const canvasCtx = canvas.getContext('2d');
+
+        startBtn.addEventListener('click', async () => {
+            // Initialize Audio Context on user click (Browser requirement)
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // Setup Receiver (Mic)
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                setupReceiver(stream);
+                statusDiv.innerText = "Listening (18kHz+)...";
+                
+                // UI updates
+                startBtn.style.display = 'none';
+                msgInput.disabled = false;
+                sendBtn.disabled = false;
+            } catch (err) {
+                statusDiv.innerText = "Mic Error: " + err.message;
+            }
+        });
+
+        // --- TRANSMITTER LOGIC ---
+        sendBtn.addEventListener('click', () => {
+            const text = msgInput.value.toLowerCase();
+            if (!text) return;
+            log(`Sending: ${text}`);
+            transmitText(text);
+        });
+
+        function transmitText(text) {
+            const now = audioCtx.currentTime;
+            let cursor = now + 0.5; // Start 0.5s from now
+
+            // Simple Protocol: Convert chars to binary, then to tones
+            // We usually add a "Start Bit" (FREQ_ONE) before data to wake up receiver
+            // For MVP, we just blast tones. 
+            
+            // Create Oscillator
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            osc.type = 'sine';
+            osc.start(cursor);
+
+            // Encode logic (Basic Binary)
+            for (let i = 0; i < text.length; i++) {
+                const charCode = text.charCodeAt(i);
+                // 8 bits per char
+                for (let bit = 7; bit >= 0; bit--) {
+                    const isOne = (charCode >> bit) & 1;
+                    const freq = isOne ? FREQ_ONE : FREQ_ZERO;
+                    
+                    osc.frequency.setValueAtTime(freq, cursor);
+                    cursor += BIT_DURATION;
+                }
+            }
+
+            // Stop after message
+            osc.stop(cursor);
+            gain.gain.setValueAtTime(1, cursor - 0.01);
+            gain.gain.linearRampToValueAtTime(0, cursor); // Fade out
+        }
+
+        // --- RECEIVER LOGIC ---
+        function setupReceiver(stream) {
+            const source = audioCtx.createMediaStreamSource(stream);
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 2048; // Resolution
+            source.connect(analyser);
+            drawVisualizer();
+            
+            // Note: Actual decoding logic requires complex DSP (Goertzel algorithm).
+            // For this MVP, we are just Visualizing the spectrum so you can SEE the data.
+            // Full decoding in JS is the "Expert" part of this project.
+        }
+
+        function drawVisualizer() {
+            requestAnimationFrame(drawVisualizer);
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            analyser.getByteFrequencyData(dataArray);
+
+            canvasCtx.fillStyle = '#111';
+            canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const barWidth = (canvas.width / bufferLength) * 2.5;
+            let barHeight;
+            let x = 0;
+
+            for(let i = 0; i < bufferLength; i++) {
+                barHeight = dataArray[i] / 2;
+                // Color high freqs differently
+                if (i > bufferLength * 0.7) { 
+                    canvasCtx.fillStyle = '#ff0055'; // The Data Zone
+                } else {
+                    canvasCtx.fillStyle = '#00d9ff';
+                }
+                canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+                x += barWidth + 1;
+            }
+        }
+
+        function log(msg) {
+            logDiv.innerHTML += `<div>> ${msg}</div>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+    </script>
+</body>
+</html>
